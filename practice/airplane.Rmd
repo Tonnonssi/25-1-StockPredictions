@@ -1,0 +1,232 @@
+---
+title: "Airplane Data Report"
+author: "Jimin Lee"
+date: "2025-03-16"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+## Import 
+```{r}
+library(tidyverse)
+library(forecast)
+library(tseries)
+```
+
+### 기초 통계량 분석 
+```{r}
+summary(AirPassengers)
+```
+
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  104.0   180.0   265.5   280.3   360.5   622.0 
+
+```{r}
+plot(AirPassengers, main = "Airline Passengers Over Time",
+     xlab = "Year-Month", ylab = "Number of Passengers")
+```
+
+```{r}
+# 데이터프레임으로 변환 
+df <- data.frame(
+  year = floor(time(AirPassengers)),  # 연도 추출
+  month = cycle(AirPassengers),  # 월 추출
+  passengers = as.numeric(AirPassengers)  # 승객 수
+)
+
+# 연도별 박스플롯 생성
+ggplot(df, aes(x = factor(year), y = passengers)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Yearly Boxplot of AirPassengers",
+       x = "Year",
+       y = "Number of Passengers") +
+  theme_minimal()
+```
+  
+1949년부터 1960년까지의 베행기 탑승객 수는 강한 계절성을 띄며, 양의 추세를 보인다.  
+
+```{r}
+# 연도별 박스플롯 생성
+ggplot(df, aes(x = factor(month), y = passengers)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Monthly Boxplot of AirPassengers",
+       x = "Year",
+       y = "Number of Passengers") +
+  theme_minimal()
+```
+  
+ 2월과 11월에 비행기 탑승객의 수가 가장 적었으며, 6-8(여름)기간에는 탑승객의 수가 많았다.  
+
+
+## 시계열 분해 
+### naive
+- 가법 모델 
+```{r}
+# Decompose the time series
+decomposed_additive = decompose(AirPassengers, type="additive")
+
+plot(decomposed_additive)
+```
+```{r}
+random_component <- na.omit(decomposed_additive$random)  # NA 제거
+
+shapiro.test(random_component)  # 정규성 검정
+
+# ADF (Augmented Dickey-Fuller) Test:
+# 귀무가설(H0) → 비정상 시계열 ; 대립가설(H1) → 정상 시계열 
+adf_result <- adf.test(random_component)
+cat("📌 ADF 검정 결과:\n")
+print(adf_result)
+```
+   
+   
+- 승법 모델 
+```{r}
+decomposed_multiplicative = decompose(AirPassengers, type="multiplicative")
+
+plot(decomposed_multiplicative)
+```
+   
+   
+### STL 
+```{r}
+plot(stl(AirPassengers, s.window = 12, t.window = 80, t.jump = 5))
+```
+    
+- log를 취해 승법 모델을 가법 모델로 변환함. 
+```{r}
+plot(log(AirPassengers), main = "Log Airline Passengers Over Time",
+     xlab = "Year-Month", ylab = "Number of Passengers")
+```
+
+```{r}
+stl_result <- stl(log(AirPassengers), s.window = "periodic", t.window = 80)
+plot(stl_result)
+```
+   
+## MA(이동평균) 평활화 
+```{r}
+moving_avg <- stats::filter(AirPassengers, rep(1/12, 12), sides = 2)
+plot(AirPassengers, main = "Moving Average Smoothing", col = "blue", lwd = 2)
+lines(moving_avg, col = "red", lwd = 2)
+legend("topleft", legend = c("Original", "12-Month MA"), col = c("blue", "red"), lwd = 2)
+
+```
+  
+
+## 모델 
+### 데이터 나누기 
+```{r}
+ts_data <- AirPassengers
+
+# 훈련(train) 데이터: 1949년 ~ 1959년 (총 132개 중 120개 사용)
+train_data <- window(ts_data, end = c(1959, 12))
+
+# 테스트(test) 데이터: 1960년 (마지막 12개월 예측 평가)
+test_data <- window(ts_data, start = c(1960, 1))
+```
+
+### PACF 시각화 
+```{r}
+Pacf(AirPassengers, main = "PACF of AirPassengers", col = "blue", lwd = 2)
+```
+   
+13일때 PACF 값이 크기 때문에, AR(13) 적절 
+
+### AR (자가회귀)모델 
+
+```{r}
+#  MA (Moving Average) 모델 
+ma_model <- arima(train_data, order = c(0, 0, 13))  # MA(1) 모델
+ma_forecast <- forecast(ma_model, h = 12)
+
+# 시각화: 전체 데이터 포함
+plot(ts_data, type = "l", col = "black", lwd = 2, ylim = range(ts_data, ma_forecast$mean),
+     main = "MA vs AR Model Forecast",
+     xlab = "Year", ylab = "Number of Passengers")
+
+# MA 모델 예측값 추가
+lines(ma_forecast$mean, col = "blue", lwd = 2, lty = 2)
+ 
+# 범례 추가
+legend("topleft",
+       legend = c("Actual Data", "MA Forecast"),
+       col = c("black", "blue"),
+       lwd = 2, lty = c(1, 2, 2))
+```
+  
+p=1로 고정한 버전은 제대로 계절성도, 추세도 잘 반영하지 못했다. 
+
+```{r}
+ar_model <- ar(train_data)
+
+# 3️⃣ 12개월 예측 수행
+ar_pred <- predict(ar_model, n.ahead = 12)
+
+# 4️⃣ 시각화: 전체 데이터 포함하여 예측 비교
+plot(ts_data, type = "l", col = "black", lwd = 2, ylim = range(ts_data, ar_pred$pred),
+     main = "AR Model Forecast",
+     xlab = "Year", ylab = "Number of Passengers")
+
+# AR 예측값 추가 (빨간 점선)
+lines(1960 + (1:12)/12, ar_pred$pred, col = "red", lwd = 2, lty = 2)
+
+# 테스트 데이터 (실제값) 추가 (파란 실선)
+lines(test_data, col = "blue", lwd = 2)
+
+# 범례 추가
+legend("topleft",
+       legend = c("Actual Data", "Test Data", "AR Forecast"),
+       col = c("black", "blue", "red"),
+       lwd = 2, lty = c(1, 1, 2))
+```
+
+
+### ARIMA 
+```{r}
+# ARIMA 모델 적합
+arima_model <- auto.arima(train_data, seasonal = FALSE)
+summary(arima_model)
+
+# 12개월 예측 수행
+arima_forecast <- forecast(arima_model, h = 12)
+
+# 예측 결과 시각화
+plot(arima_forecast, main = "ARIMA Model Forecast vs Actual", col = "blue", lwd = 2)
+lines(test_data, col = "red", lwd = 2)  # 실제값 추가
+legend("topleft", legend = c("ARIMA Forecast", "Actual"), col = c("blue", "red"), lwd = 2)
+```
+   
+### SARIMA 
+```{r}
+# 계절성 포함된 SARIMA 모델 적합
+sarima_model <- auto.arima(train_data, seasonal = TRUE)
+summary(sarima_model)
+
+# 12개월 예측 수행
+sarima_forecast <- forecast(sarima_model, h = 12)
+
+# 예측 결과 시각화
+plot(sarima_forecast, main = "SARIMA Model Forecast vs Actual", col = "blue", lwd = 2)
+lines(test_data, col = "red", lwd = 2)  # 실제값 추가
+legend("topleft", legend = c("SARIMA Forecast", "Actual"), col = c("blue", "red"), lwd = 2)
+```
+
+  
+ ARIMA와 SARIMA를 비교에 사용한 지표   
+  MAPE(Mean Absolute Percentage Error). 
+	•	낮을수록 더 좋은 모델.     
+	•	일반적으로 MAPE < 10% → 매우 정확함, 10~20% → 양호함.  
+	
+  RMSE (Root Mean Squared Error).  
+	•	예측값과 실제값의 차이(오차)를 나타내는 지표.  
+	•	값이 낮을수록 예측이 정확함      
+	
+	
+| 지표 | ARIMA | SARIMA | 
+| - | - | - | 
+| MAPE | 9.647887 % | 4.182395 % | 
+| RMSE | 53.359  | 23.9317 | 
+
+ARIMA 방법론도 다른 AR,MA 방법론에 비해 계절성과 추세를 잘 포착한다. 하지만 시각화로 보나 수치적 지표로 보나 SARIMA가 더 좋은 모델임을 알 수 있다. 
